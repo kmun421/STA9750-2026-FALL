@@ -1,0 +1,34 @@
+---
+title: "Mini Bio of Katherine Mun"
+---
+## Hello! 
+I am a New Yorker who grew up in _Flushing_, _New York_, although born in
+_Lawton_, _Oklahoma_.
+
+At _Baruch College_, I studied accounting and taxation.\
+My education there has assisted me to succeed as an auditor in the government sector.\
+Currently, I work for the internal audit department of a New York City agency.
+
+As a **Baruch graduate student**, I plan to advance my career with a master's in data analytics.\
+**Meanwhile, I will continue enjoying my religious activities like praying**.\
+I wish you the best at _Baruch College_!
+```{r}
+#| echo: false
+#| message: false
+#| warning: false
+
+if(!require("leaflet")){
+    options(repos=c(CRAN="https://cloud.r-project.org"))
+    install.packages("leaflet")
+    stopifnot(require("leaflet"))
+}
+
+baruch_longitude <- -73.98333
+baruch_latitude  <- +40.74028
+
+leaflet() |>
+  addTiles() |>
+  setView(baruch_longitude, baruch_latitude, zoom=17) |>
+  addPopups(baruch_longitude, baruch_latitude, 
+            "I am a Master's student at <b>Baruch College</b>!")
+```
