@@ -722,7 +722,5 @@ Five_Least <- NTD_ENERGY|>
     scale_x_discrete(labels = scales::label_wrap(24)) 
 ```
 ::: {.callout-note title="AI Usage Statement" collapse="true"}
-
-No Generative AI tools were used to complete this mini-project.
-
+No Generative AI tools were used to complete this mini-project. 
 :::
