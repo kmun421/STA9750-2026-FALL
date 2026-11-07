@@ -1,0 +1,335 @@
+---
+title: Netflix
+---
+
+```{r}
+#  This function will acquire and standardize all data of "What We Watched Reports"
+#  from Netflix. Because Netflix hosts the data files behind a CDN, we
+#  are accessing the release pages and automatically extracting links to the
+#  relevant files (with CDN hash). 
+# 
+#  After import, files are stacked vertically and some basic cleaning is
+#  performed. 
+load_netflix_data <- function(){
+  
+  library(tidyverse)
+  library(rvest)
+  library(readxl)
+  library(fs)
+  library(scales)
+  library(gt)
+
+  
+  data_dir <- path("data", "mp01")
+    
+  if(!dir_exists(data_dir)){
+    dir_create(data_dir, showWarnings=FALSE, recurse=TRUE)
+  }
+  
+  NETFLIX_URLS <- list(
+    `2023H1` = "https://about.netflix.com/news/what-we-watched-a-netflix-engagement-report",
+    `2023H2` = "https://about.netflix.com/news/what-we-watched-the-second-half-of-2023",
+    `2024H1` = "https://about.netflix.com/news/what-we-watched-the-first-half-of-2024",
+    `2024H2` = "https://about.netflix.com/news/what-we-watched-the-second-half-of-2024",
+    `2025H1` = "https://about.netflix.com/news/what-we-watched-the-first-half-of-2025",
+    `2025H2` = "https://about.netflix.com/news/what-we-watched-the-second-half-of-2025",
+    `2026H1` = "https://about.netflix.com/news/what-we-watched-the-first-half-of-2026"
+  )
+  
+  download_if_needed <- function(url, local){
+    if(!file_exists(local)){
+      download.file(url, local, quiet = TRUE, mode = "wb")
+    }
+    
+    return(local)
+  }
+    
+  NETFLIX_URLS |> 
+    map(read_html) |> 
+    map(html_element, xpath = "//a[contains(@href, '.xlsx')]") |> 
+    map_chr(html_attr, "href") |> 
+    enframe("period", "url") |> 
+   mutate(path = path(data_dir, paste0(period, ".xlsx")), 
+          path = map2(url, path, download_if_needed), 
+          data = map(path, read_excel, skip=3, na="*"), 
+          data = map(data, \(x) x |> mutate(`Release Date` = as.Date(`Release Date`)))) |>
+    unnest(data) |> 
+    select(-url, -path) |> 
+    mutate(year=str_sub(period, 1, 4), 
+           half=str_sub(period, start=6), 
+           period_start = make_date(year, if_else(half==1, 1, 7), 1), 
+           period_end = make_date(year, if_else(half==1, 6, 12), if_else(half==1, 30, 31))) |> 
+    filter(!is.na(`Hours Viewed`)) |> 
+    mutate(live_event = !is.na(Runtime) & str_detect(Runtime, "\\d+:\\d+\\*"), 
+           clean_time = str_remove(Runtime, fixed("*")),
+           Runtime = 60 * hour(hm(clean_time)) + minute(hm(clean_time))) |>
+    select(-clean_time) |>
+    mutate(Runtime = coalesce(Runtime, mean(Runtime, na.rm=TRUE)), 
+           .by=Title, 
+           Title = stringi::stri_trans_general(Title, "Latin-ASCII"),
+           Title = str_remove(Title, " // .*"), 
+           Title = str_remove(Title, "[^[:ascii:]].*"), 
+           Title = str_trim(Title)) |>
+    filter_out(Title == "") |>
+    select(year, 
+           period, 
+           period_start, 
+           period_end, 
+           Title, 
+           -half, 
+           Runtime, 
+           Views, 
+           `Hours Viewed`, 
+           `Release Date`,
+           `Available Globally?`, 
+           live_event)
+    }
+
+  NETFLIX_DATA <- load_netflix_data()
+  NETFLIX_DATA1 <- NETFLIX_DATA |>
+    rename(title = Title,
+           runtime = Runtime,
+           hours_viewed = `Hours Viewed`,
+           views = Views,
+           release_date = `Release Date`,
+           available_globally = `Available Globally?`)|>
+    
+    mutate(year = as.integer(year),
+          available_globally = as.logical("Yes" == TRUE, "No" == FALSE))
+```
+```{r}
+# The table lists 11 data types for 61,892 shows.
+glimpse(NETFLIX_DATA1)
+```
+```{r}
+# The table lists the statistics of 11 data types for 61,892 shows. 
+summary(NETFLIX_DATA1)
+```
+```{r}
+
+x <- pull(NETFLIX_DATA1, period_start)
+y <- pull(NETFLIX_DATA1, period_end)
+count_months <- NETFLIX_DATA1 |>
+  mutate(months = month(y) - month(x) + 1) |>
+  distinct(months) 
+
+min_periodstart <- NETFLIX_DATA1 |> 
+  distinct(min(period_start, na.rm = TRUE)) 
+
+max_periodend <- NETFLIX_DATA1 |>
+  distinct(max(period_end, na.rm = TRUE))
+
+min_release <- NETFLIX_DATA1 |>
+  distinct(min(release_date, na.rm = TRUE))
+
+max_release <- NETFLIX_DATA1 |>
+  distinct(max(release_date, na.rm = TRUE))
+
+```
+The period range of a view was `r count_months` months, between `r min_periodstart` and `r max_periodend`, for
+every show or movie with unavailable release date or released between `r min_release` and `r max_release`.
+```{r}
+unique_titles <- n_distinct(NETFLIX_DATA1$title)
+comma(unique_titles)
+```
+A total of `r comma(unique_titles)` shows and movies were listed in the data set.
+```{r}
+B <- NETFLIX_DATA1 |>
+  filter(str_detect(title, "Bridgerton")) |>
+  summarize(sum(hours_viewed, na.rm = TRUE))
+
+B1 <- as.numeric(B)
+comma(B1)
+```
+The total hours spent watching a universe of "Bridgerton" shows was `r comma(B1)`.
+```{r}
+S <- NETFLIX_DATA1 |>
+  filter(str_detect(title, "Stranger Things")) |>
+  filter_out(str_detect(title, ":")) |>
+  summarize(sum(hours_viewed, na.rm = TRUE))
+
+S1 <- as.numeric(S)
+comma(S1)
+```
+The total hours spent watching the five seasons of "Stranger Things" was `r comma(S1)`.
+```{r}
+topten <- NETFLIX_DATA1 |>
+  filter(period == "2026H1") |>
+  mutate(totalwatch = sum(hours_viewed, na.rm = TRUE)) |>
+  slice_max(hours_viewed, n = 10) |>
+  mutate(hoursviewed = sum(hours_viewed, na.rm = TRUE),
+         percent_hoursviewed = percent(hoursviewed/totalwatch, accuracy = 0.1)) |>
+  distinct(percent_hoursviewed)
+
+print(topten)
+```
+In the first half of 2026, `r topten` of total watch time was spent on top 10 titles. 
+```{r}
+Gavailable <- NETFLIX_DATA1 |>
+  filter(available_globally == "TRUE")
+
+GTotalhours <- NETFLIX_DATA1 |>
+  summarize(sum(hours_viewed, na.rm = TRUE))
+
+G <- as.numeric(GTotalhours)
+comma(G)
+
+Unique_titles1 <- NETFLIX_DATA1 |>
+  mutate(unique_percent = percent(unique_titles/unique_titles))|>
+  distinct(unique_percent)
+```
+All `r comma(unique_titles)` titles, totaling `r comma(G)` hours viewed, were not globally available at `r Unique_titles1`.
+```{r}
+# Create a table listing top titles by the number of views and fraction of hours viewed for each period. The total of   views in each period was used to show the top title's percentage of views. 
+
+Top_Title <- NETFLIX_DATA1 |>
+  group_by(period) |>
+  summarize(totalviews = sum(views, na.rm = TRUE),
+            highest_viewhours = max(hours_viewed, na.rm = TRUE))
+
+Top_Title1 <- NETFLIX_DATA1 |>
+  select(period, title, hours_viewed, views) |>
+  inner_join(Top_Title, by = c("hours_viewed" = "highest_viewhours"))|>
+  select(-period.y)|>
+  rename(period = period.x)|>
+  mutate(percent_views = percent(hours_viewed/totalviews))
+ 
+  library(gt)
+  gt(Top_Title1)|>
+             tab_header(title = "Mostly Watched Seven Titles", 
+                        subtitle = "in Each Half of Calendar Year")
+```
+```{r}
+# Create a table showing changes to the number of titles and runtime in each period based on the previous period.
+
+Change <- NETFLIX_DATA1 |>
+  group_by(period) |>
+  summarize(total_title = length(unique(title)),
+            total_runtime = sum(runtime, na.rm = TRUE))|>
+  mutate(percentchange_title = percent((total_title - lag(total_title))/lag(total_title)),
+                percentchange_runtime = percent((total_runtime - lag(total_runtime))/lag(total_runtime)))
+
+  gt(Change)|>
+     tab_header(title = "Changes in Number of Titles and Runtime From Previous Period", 
+                subtitle = "in Each Half of Calendar Year")
+```
+```{r}
+# Create a table showing the titles with most consistently high viewership across all periods. To find the titles      appearing in all periods, the number of counts equaling seven was filtered. 
+
+Viewership <- NETFLIX_DATA1 |>
+  count(title)|>
+  filter(n == 7)
+
+# For each titles appearing in all seven periods, the total of views with the standard deviation, average, and the     minimum were calculated. The results were sorted by ascending order of standard deviation and descending order of    average views to show the most consistently viewed titles. 
+
+Viewership1 <- NETFLIX_DATA1 |>
+  select(title, views) |>
+  inner_join(Viewership, by = c("title" = "title"))|>
+  group_by(title) |>
+  summarize(totalviews = sum(views, na.rm = TRUE),
+            std_dev_views = sd(views, na.rm = TRUE),
+            avg_views = mean(views, na.rm = TRUE),
+            minimum_views = min(views, na.rm = FALSE))|>
+  arrange(desc(avg_views), na.rm = FALSE)|>
+  arrange(std_dev_views, na.rm = FALSE)              
+  
+gt(Viewership1)|>
+  tab_header(title = "Most Consistently Viewed Titles in Every Seven Months, 2023H1 to 2026H1",  
+             subtitle = "by ascending order of standard deviation and descending order 
+                         of average of views")
+```
+
+```{r}
+# Create a table showing estimated fractions of shows and movies viewed in each period.
+
+# Runtime in each half of calendar year was divided by 26 weeks to find whether the result was more than four          hours per week, likely indicating the title was a show. Furthermore, any title with "Season" was counted as a show.     
+Show <- NETFLIX_DATA1|>
+  filter(runtime/26 > 4 | str_detect(title, "Season"))|>
+  group_by(period)|>
+  summarize(total_shows = length(unique(title)),
+            show_hoursviewed = sum(hours_viewed, na.rm = TRUE))
+
+# Titles with less than or equal to four hours of runtime in every week of half calendar year, but excluding those     with "Season," likely indicates the title was a movie.
+
+Movie <- NETFLIX_DATA1|>
+  filter(runtime/26 <= 4 | is.na(runtime))|>
+  filter_out(str_detect(title, "Season"))|>
+  group_by(period)|>
+  summarize(total_movies = length(unique(title)),
+            movie_hoursviewed = sum(hours_viewed, na.rm = TRUE))
+
+# For each period, the total of hours viewed with the percentages of views for shows and movies were calculated. 
+
+Timespent <- Show|>
+  inner_join(Movie, by = "period")|>
+  mutate(total_hoursviewed = show_hoursviewed + movie_hoursviewed,
+            percent_shows_hoursviewed = percent(show_hoursviewed/total_hoursviewed, accuracy = 0.01),
+            percent_movies_hoursviewed = percent(movie_hoursviewed/total_hoursviewed, accuracy = 0.01))|>
+  select(-total_hoursviewed)
+
+gt(Timespent)|>
+     tab_header(title = "Estimated Fractions Spent on Watching Shows and Movies",
+                subtitle = "2023H1 to 2026H1")
+```
+
+```{r}
+# Create a table comparing the average viewership of live events and pre-taped contents in each period. The total of   viewership in each period was used to calculate the averages. The count of live events and pre-taped contents in     each period was included.
+
+Live <- NETFLIX_DATA1 |>
+  filter(live_event == "TRUE")|>
+  group_by(period)|>
+  summarize(live_event_titles = length(unique(title)),
+            live_event_views = sum(views, na.rm = TRUE))
+
+Tape <- NETFLIX_DATA1 |>
+  filter(live_event == "FALSE")|>
+  group_by(period)|>
+  summarize(taped_content_titles = length(unique(title)),
+            taped_content_views = sum(views, na.rm = TRUE))
+
+Viewspent <- Tape|>
+  full_join(Live, by = "period")|>
+  mutate(totalviews = taped_content_views + live_event_views,
+         avg.views_taped_contents = percent(taped_content_views/totalviews, accuracy = 0.01),
+         avg.views_live_event = percent(live_event_views/totalviews, accuracy = 0.01))|>
+  select(-totalviews)
+
+gt(Viewspent)|>
+     tab_header(title = "Average of Viewership on Live Events and Pre-taped Contents in Each Period",  
+                subtitle = "2023H1 to 2026H1")
+```
+Title: Netflix Corporate Strategy Memo for 2027\
+To:    Management\
+From:  Katherine Mun\
+Date:  October 16, 2026\
+
+Executive Summary\
+The number of views and view hours for `r comma(unique_titles)` titles that ran in a half calendar year, between\ 
+`r min_periodstart` and `r max_periodend`, were analyzed to plan releases in 2027.
+
+Findings of Analysis\
+Between second half of 2024 and first half of 2026, around 98% or 99% of the total views came from pre-taped\ contents in each six months because of a high number of pre-taped contents. Approximately 7,000 and 8,000 were\ pre-taped contents, while less than 120 were live events.\
+
+Among the pre-taped contents, approximately 71% of shows and 29% of movies were viewed in the first half of 2023.  However, since the second half of 2023, approximately 97% to 99% of shows were viewed because of a high number of shows. Approximately 6,000 to 7,500 were shows, while the number of movies has decreased from approximately 11,000 to below 700.
+
+Recommendation\
+Based on the analysis, Netflix should continue to run a high number of pre-taped shows in 2027 to increase viewership.
+
+::: {.callout-note title="AI Usage Statement" collapse="true"}
+
+I did not use Generative AI tools to complete this mini-project. 
+
+:::
+
+
+
+
+
+
+
+
+
+
+
+  
+                
